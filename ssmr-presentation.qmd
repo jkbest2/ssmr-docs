@@ -1,0 +1,447 @@
+---
+title: A state-space mark-recapture model for simultaneously estimating collection efficiency and abundance
+author:
+    - name: John Best
+      affiliations:
+          - name: Quantitative Synthesis and Reporting
+    - name: Thomas Buehrens
+      affiliations:
+          - name: Fish Science Region 4
+format: 
+    revealjs:
+        chalkboard: false
+        embed-resources: true
+        show-notes: true
+        <!-- footer: <img src="templates/wdfw-footer.png"> -->
+        css: templates/wdfw.css
+    pptx:
+        reference-doc: templates/wdfw-template.pptx
+---
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+```
+
+## Cowlitz River
+
+![](figs/cow-map.png){fig-align="center"}
+
+::: {.notes}
+- Tributary of the lower Columbia in southwest Washington
+- Three dams on the system, lower two operated by Tacoma Power, upper by Lewis County PUD
+- Up- and downstream fish passage mandated by FERC license agreements
+- Downstream passage into Riffe Lake effectively removes fish from anadromy
+- Primary downstream passage is from the upper basin with collection at the uppermost, Cowlitz Falls Dam
+:::
+
+## Lake Scanewa
+
+![](figs/scan-map.png){fig-align="center}
+
+::: {.notes}
+- Cowlitz Falls Dam formed Lake Scanewa at the confluence of the Cowlitz and Cispus Rivers
+- FERC license requires 95% Fish Passage Survival, defined as proportion of fish that arrive at Lake Scanewa and are released alive below Mayfield Dam
+- A large portion of this is Fish Collection Efficiency, the proportion of available fish that are collected for dowstream transport.
+- Mark recapture studies have been going on for a number of years (2013? 2016?)
+- A subset of juveniles are marked when captured, then transported to Day Use Park and released
+- Recaptures at the fish collector are then used to estimate Fish Collection Efficiency
+- Roughly 3.3km or 2mi from Day Use Park to the Fish Collector
+:::
+
+## Estimating Fish Collection Efficiency
+
+:::: {.columns}
+::: {.column width="48%"}
+### Current method
+- Only tags when 100 juveniles of a species are available
+- Simplistic method of moments estimator
+- Arithmetic mean used to estimate season-long collection efficiency
+:::
+::: {.column width="48%"}
+:::
+::::
+
+::: {.notes}
+
+:::
+
+## Estimating Fish Collection Efficiency
+
+:::: {.columns}
+::: {.column width="48%"}
+### Current method
+- Only tags when 100 juveniles of a species are available
+- Simplistic method of moments estimator
+- Arithmetic mean used to estimate season-long collection efficiency
+:::
+::: {.column width="48%"}
+### Problems
+- Limited temporal coverage
+- Coarse temporal resolution
+- Doesn't weight by arrivals
+:::
+::::
+
+::: {.notes}
+- Tagging only occurs at the peak of each run, no coverage outside that window
+- Expect that capture efficiency will vary according to environmental and operational conditions that vary daily or more rapidly
+- Substantial potential bias without considering the actual number of arrivals
+- Working with Tacoma Power to modify the study design for better temporal coverage by allowing for tag batches smaller than 100 individuals, allowing the entire trapping season to be covered. Tagging will also be done twice per week to increase resolution.
+:::
+
+## Estimating Fish Collection Efficiency
+
+:::: {.columns}
+::: {.column width="48%"}
+### Components
+- Number of fish collected
+- Number of fish arriving
+:::
+::: {.column width="48%"}
+:::
+::::
+
+::: {.notes}
+- Back to basics: what constitutes FCE
+:::
+
+## Estimating Fish Collection Efficiency
+
+:::: {.columns}
+::: {.column width="48%"}
+### Components
+- Number of fish collected
+- Number of fish arriving
+:::
+::: {.column width="48%"}
+### Estimation goals
+- Daily probability of capture
+- Daily number of fish arriving
+:::
+::::
+
+::: {.notes}
+- Temporal resolution more closely matches conditions fish are experiencing
+- Daily resolution may provide operational guidance for increasing FCE
+- Have daily marked and unmarked arrivals, so we should be able to estimate both of these!
+:::
+
+## What about BTSPAS^[Bayesian Time-Stratified Population Analysis]?
+
+- Typically stratified by week
+- Includes an explicit movement/delay component
+- Model for probability of capture includes (independent) random effects
+- Model for arrival rate depends on a temporal smoother
+- Fit using JAGS^[Just Another Gibbs Sampler]
+
+::: {.notes}
+- Would prefer to work on the daily time scale - there is typically one primary "pulse" of fish entering a trap per day, so the conditions they experience on that day are relevant
+- Using a functional form for movement and a temporal smoother for arrival rates is great!
+- Would like a more flexible specification of the model for probability of capture; in the context of dams we want to be able to make inferences about operations that affect probability of capture
+- JAGS is great, but for models that can use it Stan offers a lot of benefits in model diagnostics and speed
+:::
+
+## Probability of Capture
+
+### Travel Time
+
+- $N_r$ fish are released on day $r$
+- Travel time is modeled as a function $F_{\theta}$
+- Proportion released on day $r$ arriving on day $t$ is
+
+$$\theta_{rt} = \begin{cases}
+0 & t \le r\\
+F_{\theta}(t - r) - F_{\theta}(t - r - 1) & r < t, t - r \le T\\
+0 & i - t > T
+\end{cases}$$
+
+- Assume no arrivals after day $T$
+
+::: {.notes}
+- $F$ is usually the CDF of a probability distribution. Exponential works well for steelhead and coho in this system, log-normal works well for Chinook (but adds an additional parameter to estimate)
+- $T$ is species-specific and is chosen based on the data (Chinook take longer to transit than steelhead or coho)
+:::
+
+## Probability of Capture
+
+### Proportion arriving each day
+
+```{r}
+#| dpi:300
+df <- tibble(x = seq(0, 35, 0.1),
+             y = dexp(x, rate = 1 / 5),
+             y1 = ifelse(ceiling(x) %% 2, y, NA),
+             y2 = ifelse(ceiling(x) %% 2, NA, y)) |>
+  mutate(y1 = ifelse(!(x %% 1), y, y1),
+         y2 = ifelse(!(x %% 1), y, y2))
+
+df2 <- tibble(
+  x = 1:35,
+  y = dexp(x, rate = 1 / 5),
+  pr = pexp(x, rate = 1 / 5) - pexp(x - 1, rate = 1 / 5),
+  prlab = scales::percent(pr, accuracy = 0.1))
+
+ggplot(df, aes(x = x)) +
+  geom_ribbon(aes(ymin = 0, ymax = y1),
+              fill = "gray80") +
+  geom_ribbon(aes(ymin = 0, ymax = y2),
+              fill = "gray50") +
+  geom_line(aes(y = y)) +
+  geom_text(data = df2, aes(y = y, label = prlab),
+            nudge_x = 0.1, nudge_y = 0.005) +
+  labs(x = "Days since release") +
+  scale_x_continuous(breaks = 0:35, minor_breaks = NULL,
+                     expand = expansion(add = c(0, 0.5))) +
+  scale_y_continuous(expand = expansion()) +
+  coord_cartesian(xlim = c(0, 15), expand = TRUE) +
+  theme_minimal() +
+  theme(axis.line.x = element_line(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid = element_blank())
+```
+
+::: {.aside}
+Expected travel time of 5 days
+:::
+
+## Probability of Capture
+
+### Probability of collection
+
+- Given arrival, how likely is an individual to be collected?
+- Modeled as $p_t$, probability of collection on day $t$
+- Flexible specification, allows covariates $\boldsymbol{x}_t$
+- May use `mgcv` smoothers, including for time
+
+$$p_{t} = \operatorname{logit}^{-1}(\phi_t) = f_{\phi}(\boldsymbol{x}_{t})$$
+
+::: {.notes}
+- Smoothers allow for nonlinear relationships with covariates
+- Smoothers over time can account for temoporally-correlated changes in conditions not captured by covariates 
+:::
+
+## Probability of Capture
+
+### Observation Likelihood
+
+For
+
+- $n_{rt}$ marked fish recaptured from release $r$ on day $t$ after release
+- $N_{r}$ total number of fish released on day $r$
+- $\theta_{rt}$ proportion of fish arriving on day $t$ from release $r$
+- $p_t$ probability of capture on day $t$
+
+$$[n_{r1},\ldots,n_{rT}, N_{r} - \sum_{t} n_{rt}] \sim$$ 
+$$\operatorname{Multinomial}(\theta_{r1} p_{r+1}, \ldots, \theta_{rT} p_{r+T}, 1 - \sum_{t} \theta_{rt} p_{t}$$
+
+## Arrival Process
+
+- Log-arrival rate $\lambda_{t}$ is modeled as a function of covariates $\boldsymbol{z}_t$,
+
+$$\log(\lambda_{t}) = f_{\lambda}(\boldsymbol{z}_{t}),$$
+
+- $U_{t}$ unmarked fish arrive on day $t$ at rate $\lambda_{t}$, so that
+
+$$U_{t} \sim \operatorname{Poisson}(\lambda_{t})$$
+
+- $u_{t}$ individuals are collected with probability $p_{t}$, so
+
+$$u_t \sim \operatorname{Poisson}(\lambda_{t} p_t)$$
+
+::: {.notes}
+- This is how the two processes are linked!
+:::
+
+## Collection efficiency
+
+- Simulate values of $U_t$ from a *truncated* Poisson distribution
+
+$$U_t^{*} \sim \operatorname{Poisson}(\lambda_t) \quad \text{s.t.}\quad U_t \ge u_t$$
+
+- Then estimated Fish Collection Efficiency is
+
+$$\widehat{\textrm{FCE}} = \frac{\sum_t u_t}{\sum_t U_t^*}$$
+
+::: {.notes}
+- We have both pieces now, so we can estimate FCE
+- Can't have fewer arrivals than were captured!
+:::
+
+## Priors
+
+- Covariates are scaled to have mean zero, standard deviation one
+- Each coefficient has a $Normal(0, \sigma_{i}^{2})$ prior
+- $\sigma_{i}$ is not currently estimated, including for smooths (where it acts as the smoothness penalty)
+
+::: {.notes}
+- This may be an area for further expoloration
+:::
+
+## Model fitting
+
+- Model is fit using the No-U-Turn Sampler in Stan
+
+## Cowlitz River Steelhead
+
+### Data
+
+- 2020 to 2022
+- Six releases each year
+- 100 individuals per release^[with a few exceptions]
+- No recaptures after 33 days
+
+## Cowlitz River Steelhead
+
+### Covariates
+ 
+- Year intercept
+- Two-way smooth with temperature and discharge
+- Gaussian process smooth over the trapping season
+
+## Results
+
+### Partial effect of temperature and discharge
+
+![](figs/sth_temp_discharge_noobs.png){fig-align="center"}
+
+::: {.notes}
+- See some positive effect that peaks around 10C and 10k cfs discharge
+- Not surprising to see peak in both temperature and flow
+- Important to note the uncertainty in the lower (-1) contour, a substantial amount of extrapolation is done here due to the study design.
+:::
+
+## Results
+
+### Partial effect of temperature and discharge
+
+![](figs/sth_temp_discharge_withobs.png){fig-align="center"}
+
+::: {.notes}
+- No releases were done early (low temperatures) or late season (high temperatures) so we don't have much information
+- But still need to extrapolate to this area in order to infer the number of fish available during those days
+:::
+
+## Results
+
+### Estimated probability of capture
+
+![](figs/sth_est_prob_capture.png){fig-align="center"}
+
+::: {.notes}
+- This includes a yearly intercept and a temporal smooth to account for variation not due to temperature or discharge
+:::
+
+## Results
+
+### Arrival rate estimate
+
+![](figs/sth_est_arrival_rate.png){fig-align="center"}
+
+::: {.notes}
+- This is the mean of the Poisson, so doesn't account for all variability
+:::
+
+## Results
+
+### Run size estimate
+
+![](figs/sth_run_est.png){fig-align="center"}
+
+::: {.notes}
+- This includes variation due to the Poisson process
+- Some issues to address here with the observations being larger than expected in a few places
+:::
+
+## Results
+
+### Fish Collection Efficiency
+
+![](figs/sth_fce_est.png){fig-align="center"}
+
+::: {.notes}
+- Red dots are the estimates from Tacoma Power
+- These are not definitive estimates, but provide a demonstration of the model
+- Need to do additional model checking, look for additional covariates
+:::
+
+## Can we do better?
+
+- Assume temperature and discharge effects are shared among species
+- Include separate intercepts and temporal smooths for Chinook and coho
+- Adds 4 Chinook releases in 2020, 6 in 2021, and 7 in 2022
+- Adds 11 coho release in 2020, 10 in 2021, and 9 in 2022
+
+::: {.notes}
+- Chinook mark-recapture experiments occur late in the season during the peak of that outmigration
+:::
+
+## Results
+
+### Partial effect of temperature and discharge
+
+![](figs/full_temp_discharge_withobs.png){fig-align="center"}
+
+::: {.notes}
+- No releases were done early (low temperatures) or late season (high temperatures) so we don't have much information
+- But still need to extrapolate to this area in order to infer the number of fish available during those days
+:::
+
+## Results
+
+### Estimated probability of capture
+
+![](figs/full_est_prob_capture.png){fig-align="center"}
+
+::: {.notes}
+- This includes a yearly intercept and a temporal smooth to account for variation not due to temperature or discharge
+:::
+
+## Results
+
+### Arrival rate estimate
+
+![](figs/full_est_arrival_rate.png){fig-align="center"}
+
+::: {.notes}
+- This is the mean of the Poisson, so doesn't account for all variability
+:::
+
+## Results
+
+### Run size estimate
+
+![](figs/full_run_est.png){fig-align="center"}
+
+::: {.notes}
+- This includes variation due to the Poisson process
+- Some issues to address here with the observations being larger than expected in a few places
+:::
+
+## Results
+
+### Fish Collection Efficiency
+
+![](figs/combo_fce_est.png){fig-align="center"}
+
+::: {.notes}
+- Arguably some improvement, with slightly less uncertainty
+- Still a lot of room for improvment, both in model selection (finding new covariates) and in study design
+- The structure of the model allows for rapid iteration
+:::
+
+## Future work
+
+### Other applications
+- Other dam systems
+- Smolt trap data
+
+### Improvements
+- Allow travel time to vary over each season
+- Account for more variation in arrival process
+- Estimate smoothness penalty parameters
+- Allow for batch-marked fish
+- Allow for multiple recapture opportunities
+- Create an R package for general use
+
+# Thank you!
