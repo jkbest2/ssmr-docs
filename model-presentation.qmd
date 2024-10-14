@@ -1,0 +1,257 @@
+---
+title: State-space mark-recapture
+author: John Best
+format: 
+    revealjs:
+        chalkboard: true
+        embed-resources: false
+        show-notes: false
+        footer: <img src="templates/wdfw-footer.png">
+        css: templates/wdfw.css
+---
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+```
+
+## Why write a new model?
+
+- BTSPAS is great, but has some weaknesses
+- Other models focus on estimating pHOS and other metrics that are not at play here
+- Other models focus on a single species in a single year
+  
+::: {.notes}
+- BTSPAS and others require choosing a temporal stratification
+- BTSPAS written in JAGS; Stan is better
+- Requires downscaling covariates
+- Difficult to account for missing trapping days
+- Use hierarchical models to share information among species and/or years
+:::
+
+## Why now?
+
+![](figs/cow-map.png){fig-align="center"}
+
+::: {.notes}
+- Three listed species: LCR Chinook, LCR Steelhead, LCR/SW Coho
+- Tacoma Power is required to transport 95% of juveniles downstream
+- Over the past two decades of their license, they've never succeeded
+- Have used dodgy methods for estimating collection efficiency
+  
+- FERC license requires 95% Fish Passage Survival, defined as proportion of fish that arrive at Lake Scanewa and are released alive below Mayfield Dam
+- FPS is defined as the proportion of juveniles that enter Lake Scanewa who are released alive from the Acclimation ponds downstream of Mayfield Dam
+:::
+
+## Where are we?
+
+![](figs/scan-map.png){fig-align="center"}
+
+::: {.notes}
+- Cowlitz Falls Dam formed Lake Scanewa at the confluence of the Cowlitz and Cispus Rivers
+- We know how many fish are released alive, so we need to estimate the number that enter the reservoir
+- We have the number of unmarked fish collected each day, so we need
+
+- A large portion of this is Fish Collection Efficiency, the proportion of available fish that are collected for dowstream transport.
+- Mark recapture studies have been going on for a number of years (2013? 2016?)
+- A subset of juveniles are marked when captured, then transported to Day Use Park and released
+- Recaptures at the fish collector are then used to estimate Fish Collection Efficiency
+- Roughly 3.3km or 2mi from Day Use Park to the Fish Collector
+:::
+
+## How can we model this process?
+
+- Juveniles are captured at the collector
+- Some are tagged and released upstream
+- Tagged fish take some time to travel back to the collector
+- There they are recaptured with some probability
+- This probability is assumed the same as the unmarked fish
+
+## What do we need to model?
+
+1. Recapture delay/travel time
+2. Probability of capture
+3. Unmarked arrival rate
+   
+::: {.notes}
+- The specification of each of these will affect the others
+- Any of them could (in theory) include covariate effects
+:::
+
+## How long before a released fish is available for recapture?
+
+- Not particularly well informed
+- Difficult to identify vs. probability of capture
+- Functional forms can use a CDF or PDF approach
+- Different for each species
+- Changes over the collection season
+- May have different behaviors within releases (migrating vs. rearing)
+
+::: {.notes}
+- Identification difficulty means that it should be chosen somewhat conservatively, so that information can go to probability of capture
+:::
+
+## How long before a released fish is available for recapture?
+
+CDF Approach
+
+$$\alpha_t = \Phi(t, \boldsymbol{\theta}) - \Phi(t - 1, \boldsymbol{\theta})$$
+
+## How long before a released fish is available for recapture?
+
+CDF Approach
+
+```{r}
+#| dpi: 300
+df <- tibble(
+  x = seq(0, 35, 0.1),
+  y = dexp(x, rate = 1 / 5),
+  y1 = ifelse(ceiling(x) %% 2, y, NA),
+  y2 = ifelse(ceiling(x) %% 2, NA, y)
+) |>
+  mutate(
+    y1 = ifelse(!(x %% 1), y, y1),
+    y2 = ifelse(!(x %% 1), y, y2)
+  )
+
+df2 <- tibble(
+  x = 1:35,
+  y = dexp(x, rate = 1 / 5),
+  pr = pexp(x, rate = 1 / 5) - pexp(x - 1, rate = 1 / 5),
+  prlab = scales::percent(pr, accuracy = 0.1)
+)
+
+ggplot(df, aes(x = x)) +
+  geom_ribbon(aes(ymin = 0, ymax = y1),
+    fill = "gray80"
+  ) +
+  geom_ribbon(aes(ymin = 0, ymax = y2),
+    fill = "gray50"
+  ) +
+  geom_line(aes(y = y)) +
+  geom_text(
+    data = df2, aes(y = y, label = prlab),
+    nudge_x = 0.1, nudge_y = 0.005
+  ) +
+  labs(x = "Days since release") +
+  scale_x_continuous(
+    breaks = 0:35, minor_breaks = NULL,
+    expand = expansion(add = c(0, 0.5))
+  ) +
+  scale_y_continuous(expand = expansion()) +
+  coord_cartesian(xlim = c(0, 15), expand = TRUE) +
+  theme_minimal() +
+  theme(
+    axis.line.x = element_line(),
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid = element_blank()
+  )
+```
+
+::: {.aside}
+Expected travel time of 5 days
+:::
+
+## How long before a released fish is available for recapture?
+
+PDF Approach
+
+$$\begin{aligned}
+\alpha_t &= \frac{\exp \left\{\phi(t - 0.5, \boldsymbol{\theta}) + \epsilon_t\right\}}
+{\sum_t \exp \left\{\phi(t - 0.5, \boldsymbol{\theta}) + \epsilon_t\right\}}\\
+\epsilon_t &\sim \operatorname{MVN}(\boldsymbol{0}, \boldsymbol{\Sigma}),
+\end{aligned}$$
+
+- Allows inclusion of random effects
+- More general functional forms, including nonparametrics like splines
+  
+## Once available, how long does it remain available?
+
+- Easy for in-river smolt traps like screw traps
+- May be worth extending for dam-based fish collectors
+  
+$$\alpha_t = a_t +(1 - p_{t-1})(1 - \ell_{t-1})a_{t-1} + \cdots$$
+
+- Difficult to include explicit $\ell$
+
+::: {.notes}
+- Multiple day availability may allow for incorporation of e.g. spill as increased loss in a given day. May also smooth out effects of travel time functional form?
+:::
+
+## What proportion of available fish will be captured?
+
+$$\begin{aligned}
+&\operatorname{logit^{-1}}(p_t) = \boldsymbol{X}\boldsymbol{\beta}\\
+&\boldsymbol{Y} \sim \operatorname{multinomial}\left(N, \left(\alpha_{r+1} p_{r+1}, \ldots, \alpha_{r+T} p_{r+T}, 1 - \sum_{t = 1}^T \alpha_{r+t} p_{r+t}\right) \right)
+\end{aligned}$$
+
+- Nuisance parameters in some cases
+- Important at Cowlitz, may inform operations
+- Many potential covariates, can include a temporal smoother
+- Include offset to account for days trap is closed
+  
+::: {.notes}
+- Nature of the temporal smoother determined by prior placed on $\beta$
+- Currently using `mgcv` smoothers, so many options
+:::
+  
+## What proportion of available fish will be captured?
+
+![](figs/full_est_prob_capture.png){fig-align="center"}
+
+::: {.notes}
+- This includes a yearly intercept and a temporal smooth to account for variation not due to temperature or discharge
+:::
+
+## How do covariates affect capture probability?
+
+![](figs/full_temp_discharge_withobs.png){fig-align="center"}
+
+::: {.notes}
+- No releases were done early (low temperatures) or late season (high temperatures) so we don't have much information
+- But still need to extrapolate to this area in order to infer the number of fish available during those days
+:::
+
+## How many unmarked fish are arriving each day?
+
+- Assume arrivals are an inhomogeneous Poisson process
+- Each fish is collected with the capture probability
+- Includes temporal smoother
+- Lower variability during off-peak migration
+- Higher variability during peak migration
+- Not capturing enough variability
+
+::: {.notes}
+- This implies arrivals are independent of each other
+- Thinned Poisson is still Poisson
+- Could consider Poisson multinomial trick
+:::
+
+## How many unmarked fish are arriving each day?
+
+![](figs/full_run_est.png){fig-align="center"}
+
+::: {.notes}
+- This includes variation due to the Poisson process
+- Some issues to address here with the observations being larger than expected in a few places
+- Uses a lower-truncated Poisson to condition on number of observed fish
+:::
+
+## Questions
+
+- Which of the three models should include covariate effects?
+- Which covariates to include?
+- Should I include nonlinear covariate effects? Interactions?
+  
+- Which travel time form should I use?
+
+- How to account for extra variability in unmarked arrivals?
+- How to choose priors?
+
+- Which model misspecifications will be most important to check in a simulation study?
+
+## Future work
+
+- Extrapolate arrival rates to determine how many fish are missed in the off season
+- Allow for batch marks
+- Explore individual covariates
