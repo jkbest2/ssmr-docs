@@ -1,0 +1,307 @@
+---
+title: A state-space approach to modeling smolt trap data
+author:
+    - name: John Best
+      affiliations:
+          - name: Quantitative Synthesis and Reporting
+format: 
+    revealjs:
+        chalkboard: true
+        embed-resources: false
+        show-notes: false
+        footer: <img src="templates/wdfw-footer.png">
+        css: templates/wdfw.css
+---
+
+```{r}
+## | echo: false
+## | message: false
+## | warning: false
+library(tidyverse)
+library(posterior)
+library(ggdist)
+library(mgcv)
+library(patchwork)
+
+source("data-functions.R")
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, dpi = 300)
+
+data <- read_rds("data/sth-2024-data.rds")
+release_df <- data$release_df
+recap_df <- data$recap_df
+unmarked <- data$unmarked
+dat <- data$dat
+fit <- read_rds("data/sth-2024-fce-fit.rds")
+post <- as_draws_rvars(fit) |>
+  thin_draws(10)
+```
+
+## Current analyses
+
+- Variety of models
+- Specific data preparation
+- Multiple analysis decisions each time
+  
+::: {.notes}
+- BTSPAS
+- SPLINE
+- DARR
+
+Analysis decisions include
+- stratification scale (daily, weekly, etc)
+- covariates
+- handling no-trap days
+:::
+
+## Goals of the proposed model
+
+- Allow flexibility, but have reasonable defaults
+- Collection occurs on a daily scale
+- Uses smoothers to account for missed days
+- Incorporate covariates wherever possible
+- Allow for hierarchical modeling
+  
+:::{.notes}
+- Based on the BTSPAS model
+- Daily time scale is closer to the scale that fish are moving and experiencing conditions in the river (e.g. some species tend to migrate downstream primarily overnight)
+- Daily time scale also makes covariate use more straightforward; no need to aggregate
+- BTSPAS only uses smoothers in the abundance model
+- Hierarchical modeling means being able to share e.g. collection efficiency or abundance information among years if reasonable.
+:::
+
+## Mechanics of the proposed model
+
+1. Marked fish are released
+2. They arrive at the trap over the subsequent days
+3. They are recaptured with some probability
+4. Unmarked fish arrive at some rate and are captured with the same probability
+
+```{mermaid}
+flowchart LR
+    A[Marked] -->|Recapture delay| B{Trap}
+    C[Unmarked] --> B
+    B -->|Captured| D(Observed)
+    B -->|Missed| E(Not observed)
+```
+
+:::{.notes}
+- Need to assume that maiden captures and recaptures happen with the same probability
+- Focusing here on a single-trap design
+:::
+
+## Parts of the proposed model
+
+- Recapture delay
+- Probability of capture
+- Abundance
+
+:::{.notes}
+- These are the three submodels. They can specified as constant, varying with a smooth, or informed by covariates.
+- Recapture delay is a distribution, or probability that a marked fish arrives on a given day.
+- Probability of capture can vary daily
+- Abundance represents the arrival of unmarked fish, only some of whom will be captured and observed
+:::
+  
+## 2024 Steelhead Smolts at Cowlitz Falls
+
+![](figs/scan-map.png)
+
+## Unmarked arrivals
+
+```{r}
+unmarked |>
+  ggplot(aes(x = date, y = count)) +
+  geom_line(alpha = 0.5) +
+  geom_point() +
+  scale_y_continuous(expand = expansion(c(0, 0.04))) +
+  labs(x = "Date", y = "Count") +
+  theme_minimal()
+```
+
+## Tagged releases
+
+```{r}
+release_df |>
+  ggplot(aes(x = release_date, y = count)) +
+  geom_col() +
+  labs(x = "Release Date", y = "Tags released") +
+  coord_cartesian(ylim = c(0, 104), expand = FALSE) +
+  labs(x = "Date", y = "Count") +
+  theme_minimal()
+```
+
+:::{.notes}
+- Individually PIT tagged fish
+- Once or twice per week limit of 50 or 100 each release
+:::
+
+## Travel time/recapture delay
+
+```{r}
+## | cache: true
+attr(dat, "avail_pform")$data |>
+  mutate(avail_prob = post$avail_prob) |>
+  point_interval(avail_prob, .width = 0.8) |>
+  ggplot(aes(x = travel_time, y = avail_prob, group = release_date)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper), alpha = 0.1, color = NA) +
+  geom_line() +
+  scale_y_continuous(labels = scales::percent) +
+  coord_cartesian(xlim = c(0, 41), ylim = c(0, 0.55), expand = FALSE) +
+  labs(x = "Travel Time (days)", y = "Probability of arrival") +
+  theme_minimal()
+```
+
+## Capture probability
+
+```{r}
+## | cache: true
+pcap_mm <- fce_construct_mm(
+  attr(dat, "pcap_pform"),
+  tibble(
+    species = "Steelhead",
+    spls = "Steelhead:Smolt",
+    year = factor(2024, levels = c(2023, 2024)),
+    doy = 76:245,
+  )
+)
+pcap_uc <- pcap_mm %*% (post$pcap_coef * dat$pcap_sigma)
+pcap <- rfun(plogis)(pcap_uc)[, 1, drop = TRUE]
+
+rs_mm <- fce_construct_mm(
+  attr(dat, "rs_pform"),
+  tibble(
+    species = "Steelhead",
+    spls = "Steelhead:Smolt",
+    year = factor(2024, levels = c(2023, 2024)),
+    doy = 76:245,
+    `factor(doy)` = factor(76:245)
+  )
+)
+rs_uc <- rs_mm %*% (post$runsize_coef * dat$runsize_sigma)
+# rs_uc <- dat$runsize_basis %*% (post$runsize_coef * dat$runsize_sigma)
+rs <- rfun(exp)(rs_uc)[, 1, drop = TRUE]
+
+pred_df <- tibble(
+  species = "Steelhead",
+  spls = "Steelhead:Smolt",
+  year = 2024,
+  doy = 76:245,
+  pcap = pcap,
+  rs = rs,
+  run = rvar_rng(rpois, 170, rs)
+) |>
+  mutate(
+    date = as.Date(paste(year, doy), format = "%Y %j")
+  )
+```
+
+```{r}
+## | cache: true
+## Capture probability plot ----------------------------------------------------
+## Summarize the recapture information so the observed data can be compared to
+## the fitted capture probabilities.
+recap_obs <- recap_df |>
+  summarize(
+    recap_end = max(recapture_date, na.rm = TRUE),
+    recap_count = sum(count),
+    .by = c(release_date, species)
+  ) |>
+  left_join(release_df, by = join_by(release_date, species)) |>
+  mutate(recap_rate = recap_count / count)
+
+pred_df |>
+  point_interval(pcap, .width = 0.80) |>
+  ggplot(aes(x = date, y = pcap, color = species, fill = species)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper), alpha = 0.4, color = NA) +
+  geom_segment(
+    data = recap_obs,
+    aes(
+      x = release_date, xend = recap_end,
+      y = recap_rate, yend = recap_rate,
+      color = species
+    )
+  ) +
+  geom_point(
+    data = recap_obs,
+    aes(
+      x = release_date,
+      y = recap_rate,
+      size = count,
+      color = species
+    )
+  ) +
+  geom_line() +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    x = "Date",
+    y = "Probability of capture",
+    color = "Species", fill = "Species"
+  ) +
+  theme_minimal()
+```
+
+## Daily abundance
+
+```{r}
+## | cache: true
+### Runsize plot
+pred_df |>
+  point_interval(run, .width = 0.8) |>
+  ggplot(aes(x = date)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper), alpha = 0.3) +
+  geom_line(aes(y = run)) +
+  geom_point(data = filter(unmarked, year == 2024), aes(y = count)) +
+  scale_y_continuous(expand = expansion(c(0, 0.04))) +
+  labs(x = "Date", y = "Count") +
+  theme_minimal()
+```
+
+## Total abundance and collection efficiency
+
+```{r}
+run_df <- pred_df |>
+  summarize(run = rvar_sum(run))
+
+ggplot(run_df, aes(xdist = run)) +
+  stat_halfeye() +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Total abundance") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank()
+  ) |
+  run_df |>
+    mutate(fce = sum(unmarked$count) / run) |>
+    ggplot(aes(xdist = fce)) +
+    stat_halfeye() +
+    scale_x_continuous(labels = scales::percent) +
+    labs(x = "Collection efficiency") +
+    theme_minimal() +
+    theme(
+      axis.title.y = element_blank(),
+      axis.text.y = element_blank()
+    )
+```
+
+## Future work
+
+- Extending to batch marks
+- Simulation testing
+- Robust default priors 
+- Allow for census days
+
+## Goals
+
+- `R` package
+- Data munging helper functions
+- Straightforward model interface
+- Model fit diagnostics
+- Plotting functions
+
+::: {.notes}
+- Ideally all of the important modeling decisions are made in one place
+- This allows easier comparisons among specifications, model selection where appropriate
+:::
